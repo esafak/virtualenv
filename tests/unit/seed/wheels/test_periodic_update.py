@@ -33,6 +33,14 @@ from virtualenv.seed.wheels.periodic_update import (
 from virtualenv.util.subprocess import CREATE_NO_WINDOW
 
 
+def distribution_supported(distribution, version):
+    try:
+        get_embed_wheel(distribution, version)
+        return True
+    except KeyError:
+        return False
+
+
 @pytest.fixture(autouse=True)
 def _clear_pypi_info_cache():
     from virtualenv.seed.wheels.periodic_update import _PYPI_CACHE  # noqa: PLC0415
@@ -74,7 +82,12 @@ def test_manual_upgrade(session_app_data, caplog, mocker, for_py_version):
         packages[args[1]["distribution"]].append(args[1]["for_py_version"])
     packages = {key: sorted(value) for key, value in packages.items()}
     versions = sorted(BUNDLE_SUPPORT.keys())
-    expected = {"setuptools": versions, "wheel": ["3.8"], "pip": versions}
+    expected = {"setuptools": versions, "pip": versions}
+    expected_wheel = []
+    for version in versions:
+        if distribution_supported("wheel", version):
+            expected_wheel.append(version)
+    expected["wheel"] = expected_wheel
     assert packages == expected
 
 

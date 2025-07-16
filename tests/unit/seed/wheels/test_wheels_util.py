@@ -32,5 +32,14 @@ def test_wheel_repr():
 
 
 def test_unknown_distribution():
-    wheel = get_embed_wheel("unknown", MAX)
+    with pytest.raises(KeyError, match="unknown"):
+        get_embed_wheel("unknown", MAX)
+
+
+def distribution_supported(distribution, version):
+    try:
+        get_embed_wheel(distribution, version)
+        return True
+    except KeyError:
+        return False
     assert wheel is None
