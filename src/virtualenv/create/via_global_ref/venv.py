@@ -73,12 +73,13 @@ class Venv(ViaGlobalRefApi):
     def create_via_sub_process(self):
         cmd = self.get_host_create_cmd()
         LOGGER.info("using host built-in venv to create via %s", " ".join(cmd))
+        LOGGER.info("resolved executable to %s", self.interpreter.executable)
         code, out, err = run_cmd(cmd)
         if code != 0:
             raise ProcessCallFailedError(code, out, err, cmd)
 
     def get_host_create_cmd(self):
-        cmd = [self.interpreter.system_executable, "-m", "venv", "--without-pip"]
+        cmd = [self.interpreter.executable, "-m", "venv", "--without-pip"]
         if self.enable_system_site_package:
             cmd.append("--system-site-packages")
         cmd.extend(("--symlinks" if self.symlinks else "--copies", str(self.dest)))

@@ -103,6 +103,8 @@ class PythonInfo:  # noqa: PLR0904
         else:
             self.sysconfig_scheme = None
             self.sysconfig_paths = {i: sysconfig.get_path(i, expand=False) for i in sysconfig.get_path_names()}
+            if "headers" not in self.sysconfig_paths:
+                self.sysconfig_paths["headers"] = self.sysconfig_paths.get("include")
             self.distutils_install = self._distutils_install().copy()
 
         # https://bugs.python.org/issue22199
