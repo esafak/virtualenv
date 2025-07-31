@@ -246,7 +246,7 @@ class PythonInfo:  # noqa: PLR0904
         )
         if not os.path.exists(path):  # some broken packaging don't respect the sysconfig, fallback to distutils path
             # the pattern include the distribution name too at the end, remove that via the parent call
-            fallback = os.path.join(self.prefix, os.path.dirname(self.install_path("headers")))
+            fallback = os.path.join(self.prefix, os.path.dirname(self.install_path("include")))
             if os.path.exists(fallback):
                 path = fallback
         return path
