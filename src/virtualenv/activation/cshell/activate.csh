@@ -5,7 +5,7 @@
 set newline='\
 '
 
-alias deactivate 'test $?_OLD_VIRTUAL_PATH != 0 && setenv PATH "$_OLD_VIRTUAL_PATH:q" && unset _OLD_VIRTUAL_PATH; test $?_OLD_VIRTUAL_PKG_CONFIG_PATH != 0 && setenv PKG_CONFIG_PATH "$_OLD_VIRTUAL_PKG_CONFIG_PATH:q" && unset _OLD_VIRTUAL_PKG_CONFIG_PATH; rehash; test $?_OLD_VIRTUAL_PROMPT != 0 && set prompt="$_OLD_VIRTUAL_PROMPT:q" && unset _OLD_VIRTUAL_PROMPT; unsetenv VIRTUAL_ENV; unsetenv VIRTUAL_ENV_PROMPT; test "\!:*" != "nondestructive" && unalias deactivate && unalias pydoc'
+alias deactivate 'test $?_OLD_VIRTUAL_PATH != 0 && setenv PATH "$_OLD_VIRTUAL_PATH:q" && unset _OLD_VIRTUAL_PATH; if ( $?_OLD_VIRTUAL_PKG_CONFIG_PATH ) then; setenv PKG_CONFIG_PATH "$_OLD_VIRTUAL_PKG_CONFIG_PATH:q"; unset _OLD_VIRTUAL_PKG_CONFIG_PATH; else; unsetenv PKG_CONFIG_PATH; endif; rehash; test $?_OLD_VIRTUAL_PROMPT != 0 && set prompt="$_OLD_VIRTUAL_PROMPT:q" && unset _OLD_VIRTUAL_PROMPT; unsetenv VIRTUAL_ENV; unsetenv VIRTUAL_ENV_PROMPT; test "\!:*" != "nondestructive" && unalias deactivate && unalias pydoc'
 
 # Unset irrelevant variables.
 deactivate nondestructive
