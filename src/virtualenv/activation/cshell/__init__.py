@@ -11,6 +11,10 @@ class CShellActivator(ViaTemplateActivator):
     def templates(self):
         yield "activate.csh"
 
+    @staticmethod
+    def quote(path):
+        return f"'{path}'" if path else "''"
+
 
 __all__ = [
     "CShellActivator",

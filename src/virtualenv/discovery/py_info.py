@@ -123,6 +123,22 @@ class PythonInfo:  # noqa: PLR0904
 
         self.sysconfig_vars = {i: sysconfig.get_config_var(i or "") for i in config_var_keys}
 
+        self.tcl_lib, self.tk_lib = None, None
+        try:
+            import tkinter
+        except ImportError:
+            pass
+        else:
+            try:
+                tcl = tkinter.Tcl()
+                self.tcl_lib = tcl.eval("info library")
+                tk_version = tcl.eval("package require Tk")
+                tk_lib_path = os.path.join(os.path.dirname(self.tcl_lib), f"tk{tk_version}")
+                if os.path.isdir(tk_lib_path):
+                    self.tk_lib = tk_lib_path
+            except tkinter.TclError:
+                pass
+
         confs = {
             k: (self.system_prefix if v is not None and v.startswith(self.prefix) else v)
             for k, v in self.sysconfig_vars.items()

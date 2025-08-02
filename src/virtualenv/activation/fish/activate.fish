@@ -26,6 +26,8 @@ function deactivate -d 'Exit virtualenv mode and return to the normal environmen
         set -e _OLD_VIRTUAL_PATH
     end
 
+    __TCL_TK_TEARDOWN__
+
     if test -n "$_OLD_VIRTUAL_PYTHONHOME"
         set -gx PYTHONHOME "$_OLD_VIRTUAL_PYTHONHOME"
         set -e _OLD_VIRTUAL_PYTHONHOME
@@ -67,6 +69,8 @@ else
     set -gx _OLD_VIRTUAL_PATH $PATH
 end
 set -gx PATH "$VIRTUAL_ENV"'/'__BIN_NAME__ $PATH
+
+__TCL_TK_SETUP__
 
 # Prompt override provided?
 # If not, just use the environment name.

@@ -2,11 +2,56 @@ from __future__ import annotations
 
 import os
 import sys
+from argparse import Namespace
 
 import pytest
 
 from virtualenv.activation import FishActivator
 from virtualenv.info import IS_WIN
+
+
+@pytest.mark.parametrize(
+    ("tcl_lib", "tk_lib", "present"),
+    [
+        ("/path/to/tcl", "/path/to/tk", True),
+        (None, None, False),
+    ],
+)
+def test_fish_tkinter_generation(tmp_path, tcl_lib, tk_lib, present):
+    # GIVEN
+    class MockInterpreter:
+        pass
+
+    interpreter = MockInterpreter()
+    interpreter.tcl_lib = tcl_lib
+    interpreter.tk_lib = tk_lib
+
+    class MockCreator:
+        def __init__(self, dest):
+            self.dest = dest
+            self.bin_dir = dest / "bin"
+            self.bin_dir.mkdir()
+            self.interpreter = interpreter
+            self.pyenv_cfg = {}
+            self.env_name = "my-env"
+
+    creator = MockCreator(tmp_path)
+    options = Namespace(prompt=None)
+    activator = FishActivator(options)
+
+    # WHEN
+    activator.generate(creator)
+    content = (creator.bin_dir / "activate.fish").read_text(encoding="utf-8")
+
+    # THEN
+    if present:
+        assert "set -gx TCL_LIBRARY '/path/to/tcl'" in content
+        assert "set -gx TK_LIBRARY '/path/to/tk'" in content
+        assert 'if test -n "$_OLD_VIRTUAL_TCL_LIBRARY"; set -gx TCL_LIBRARY "$_OLD_VIRTUAL_TCL_LIBRARY"; set -e _OLD_VIRTUAL_TCL_LIBRARY; else; set -e TCL_LIBRARY; end' in content
+        assert 'if test -n "$_OLD_VIRTUAL_TK_LIBRARY"; set -gx TK_LIBRARY "$_OLD_VIRTUAL_TK_LIBRARY"; set -e _OLD_VIRTUAL_TK_LIBRARY; else; set -e TK_LIBRARY; end' in content
+    else:
+        assert "TCL_LIBRARY" not in content
+        assert "TK_LIBRARY" not in content
 
 
 @pytest.mark.skipif(IS_WIN, reason="we have not setup fish in CI yet")
