@@ -19,11 +19,11 @@ from subprocess import Popen
 from typing import TYPE_CHECKING
 
 from virtualenv.app_data.na import AppDataDisabled
-from virtualenv.discovery.file_cache import FileCache
+from virtualenv.cache import FileCache
 
 if TYPE_CHECKING:
     from virtualenv.app_data.base import AppData
-    from virtualenv.discovery.cache import Cache
+    from virtualenv.cache import Cache
 from virtualenv.discovery.py_info import PythonInfo
 from virtualenv.util.subprocess import subprocess
 

@@ -170,12 +170,14 @@ def test_py_info_cache_invalidation_on_py_info_change(mocker, session_app_data):
     try:
         # 4. Clear the in-memory cache
         mocker.patch.dict(cached_py_info._CACHE, {}, clear=True)  # noqa: SLF001
+
+        # 5. Modify py_info.py again
         py_info_script.write_text(original_content + "\n# a comment", encoding="utf-8")
 
-        # 5. Get the PythonInfo object again
+        # 6. Get the PythonInfo object again
         info = PythonInfo.from_exe(sys.executable, session_app_data)
 
-        # 6. Assert that _run_subprocess was called again
+        # 7. Assert that _run_subprocess was called again
         if is_macos_brew(info):
             assert spy.call_count in {2, 3}
         else:

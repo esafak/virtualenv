@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from virtualenv.app_data.na import AppDataDisabled
-from virtualenv.discovery.cache import Cache
+from virtualenv.cache import Cache
 
 if TYPE_CHECKING:
     from virtualenv.app_data.base import AppData
