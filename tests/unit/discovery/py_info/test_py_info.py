@@ -16,15 +16,29 @@ import pytest
 
 from virtualenv.create.via_global_ref.builtin.cpython.common import is_macos_brew
 from virtualenv.discovery import cached_py_info
+import hashlib
+
+from virtualenv.cache import FileCache
 from virtualenv.discovery.py_info import PythonInfo, VersionInfo
 from virtualenv.discovery.py_spec import PythonSpec
 from virtualenv.info import IS_PYPY, IS_WIN, fs_supports_symlink
 
-CURRENT = PythonInfo.current_system()
+
+@pytest.fixture(scope="session")
+def cache(session_app_data, request):
+    root_dir = Path(request.config.rootdir)
+    py_info_script = root_dir / "src" / "virtualenv" / "discovery" / "py_info.py"
+    py_info_hash = hashlib.sha256(py_info_script.read_bytes()).hexdigest()
+    return FileCache(session_app_data, py_info_hash)
 
 
-def test_current_as_json():
-    result = CURRENT._to_json()  # noqa: SLF001
+@pytest.fixture(scope="session")
+def current_info(session_app_data, cache):
+    return PythonInfo.current_system(session_app_data, cache)
+
+
+def test_current_as_json(current_info):
+    result = current_info._to_json()  # noqa: SLF001
     parsed = json.loads(result)
     a, b, c, d, e = sys.version_info
     f = sysconfig.get_config_var("Py_GIL_DISABLED") == 1
@@ -32,19 +46,19 @@ def test_current_as_json():
     assert parsed["free_threaded"] is f
 
 
-def test_bad_exe_py_info_raise(tmp_path, session_app_data):
+def test_bad_exe_py_info_raise(tmp_path, session_app_data, cache):
     exe = str(tmp_path)
     with pytest.raises(RuntimeError) as context:
-        PythonInfo.from_exe(exe, session_app_data)
+        PythonInfo.from_exe(exe, session_app_data, cache)
     msg = str(context.value)
     assert "code" in msg
     assert exe in msg
 
 
-def test_bad_exe_py_info_no_raise(tmp_path, caplog, capsys, session_app_data):
+def test_bad_exe_py_info_no_raise(tmp_path, caplog, capsys, session_app_data, cache):
     caplog.set_level(logging.NOTSET)
     exe = str(tmp_path)
-    result = PythonInfo.from_exe(exe, session_app_data, raise_on_error=False)
+    result = PythonInfo.from_exe(exe, session_app_data, cache, raise_on_error=False)
     assert result is None
     out, _ = capsys.readouterr()
     assert not out
@@ -57,47 +71,26 @@ def test_bad_exe_py_info_no_raise(tmp_path, caplog, capsys, session_app_data):
     assert "code" in msg
 
 
-@pytest.mark.parametrize(
-    "spec",
-    itertools.chain(
-        [sys.executable],
-        [
-            f"{impl}{'.'.join(str(i) for i in ver)}{'t' if CURRENT.free_threaded else ''}{arch}"
-            for impl, ver, arch in itertools.product(
-                (
-                    [CURRENT.implementation]
-                    + (["python"] if CURRENT.implementation == "CPython" else [])
-                    + (
-                        [CURRENT.implementation.lower()]
-                        if CURRENT.implementation != CURRENT.implementation.lower()
-                        else []
-                    )
-                ),
-                [sys.version_info[0 : i + 1] for i in range(3)],
-                ["", f"-{CURRENT.architecture}"],
-            )
-        ],
-    ),
-)
-def test_satisfy_py_info(spec):
+def test_satisfy_py_info(current_info):
+    spec = ".".join(str(i) for i in current_info.version_info[0:3])
     parsed_spec = PythonSpec.from_string_spec(spec)
-    matches = CURRENT.satisfies(parsed_spec, True)
+    matches = current_info.satisfies(parsed_spec, True)
     assert matches is True
 
 
-def test_satisfy_not_arch():
+def test_satisfy_not_arch(current_info):
     parsed_spec = PythonSpec.from_string_spec(
-        f"{CURRENT.implementation}-{64 if CURRENT.architecture == 32 else 32}",
+        f"{current_info.implementation}-{64 if current_info.architecture == 32 else 32}",
     )
-    matches = CURRENT.satisfies(parsed_spec, True)
+    matches = current_info.satisfies(parsed_spec, True)
     assert matches is False
 
 
-def test_satisfy_not_threaded():
+def test_satisfy_not_threaded(current_info):
     parsed_spec = PythonSpec.from_string_spec(
-        f"{CURRENT.implementation}{CURRENT.version_info.major}{'' if CURRENT.free_threaded else 't'}",
+        f"{current_info.implementation}{current_info.version_info.major}{'' if current_info.free_threaded else 't'}",
     )
-    matches = CURRENT.satisfies(parsed_spec, True)
+    matches = current_info.satisfies(parsed_spec, True)
     assert matches is False
 
 
@@ -117,47 +110,47 @@ _NON_MATCH_VER = _generate_not_match_current_interpreter_version()
 
 
 @pytest.mark.parametrize("spec", _NON_MATCH_VER)
-def test_satisfy_not_version(spec):
-    parsed_spec = PythonSpec.from_string_spec(f"{CURRENT.implementation}{spec}")
-    matches = CURRENT.satisfies(parsed_spec, True)
+def test_satisfy_not_version(spec, current_info):
+    parsed_spec = PythonSpec.from_string_spec(f"{current_info.implementation}{spec}")
+    matches = current_info.satisfies(parsed_spec, True)
     assert matches is False
 
 
-def test_py_info_cached_error(mocker, tmp_path, session_app_data):
+def test_py_info_cached_error(mocker, tmp_path, session_app_data, cache):
     spy = mocker.spy(cached_py_info, "_run_subprocess")
     with pytest.raises(RuntimeError):
-        PythonInfo.from_exe(str(tmp_path), session_app_data)
+        PythonInfo.from_exe(str(tmp_path), session_app_data, cache)
     with pytest.raises(RuntimeError):
-        PythonInfo.from_exe(str(tmp_path), session_app_data)
+        PythonInfo.from_exe(str(tmp_path), session_app_data, cache)
     assert spy.call_count == 1
 
 
 @pytest.mark.skipif(not fs_supports_symlink(), reason="symlink is not supported")
-def test_py_info_cached_symlink_error(mocker, tmp_path, session_app_data):
+def test_py_info_cached_symlink_error(mocker, tmp_path, session_app_data, cache):
     spy = mocker.spy(cached_py_info, "_run_subprocess")
     with pytest.raises(RuntimeError):
-        PythonInfo.from_exe(str(tmp_path), session_app_data)
+        PythonInfo.from_exe(str(tmp_path), session_app_data, cache)
     symlinked = tmp_path / "a"
     symlinked.symlink_to(tmp_path)
     with pytest.raises(RuntimeError):
-        PythonInfo.from_exe(str(symlinked), session_app_data)
+        PythonInfo.from_exe(str(symlinked), session_app_data, cache)
     assert spy.call_count == 2
 
 
-def test_py_info_cache_clear(mocker, session_app_data):
+def test_py_info_cache_clear(mocker, session_app_data, cache):
     spy = mocker.spy(cached_py_info, "_run_subprocess")
-    result = PythonInfo.from_exe(sys.executable, session_app_data)
+    result = PythonInfo.from_exe(sys.executable, session_app_data, cache)
     assert result is not None
     count = 1 if result.executable == sys.executable else 2  # at least two, one for the venv, one more for the host
     assert spy.call_count >= count
-    PythonInfo.clear_cache(session_app_data)
-    assert PythonInfo.from_exe(sys.executable, session_app_data) is not None
+    PythonInfo.clear_cache(cache)
+    assert PythonInfo.from_exe(sys.executable, session_app_data, cache) is not None
     assert spy.call_count >= 2 * count
 
 
-def test_py_info_cache_invalidation_on_py_info_change(mocker, session_app_data):
+def test_py_info_cache_invalidation_on_py_info_change(mocker, session_app_data, cache):
     # 1. Get a PythonInfo object for the current executable, this will cache it.
-    PythonInfo.from_exe(sys.executable, session_app_data)
+    PythonInfo.from_exe(sys.executable, session_app_data, cache)
 
     # 2. Spy on _run_subprocess
     spy = mocker.spy(cached_py_info, "_run_subprocess")
@@ -171,9 +164,11 @@ def test_py_info_cache_invalidation_on_py_info_change(mocker, session_app_data):
         # 4. Clear the in-memory cache
         mocker.patch.dict(cached_py_info._CACHE, {}, clear=True)  # noqa: SLF001
         py_info_script.write_text(original_content + "\n# a comment", encoding="utf-8")
+        py_info_hash = hashlib.sha256(py_info_script.read_bytes()).hexdigest()
+        new_cache = FileCache(session_app_data, py_info_hash)
 
         # 5. Get the PythonInfo object again
-        info = PythonInfo.from_exe(sys.executable, session_app_data)
+        info = PythonInfo.from_exe(sys.executable, session_app_data, new_cache)
 
         # 6. Assert that _run_subprocess was called again
         if is_macos_brew(info):
@@ -194,9 +189,9 @@ def test_py_info_cache_invalidation_on_py_info_change(mocker, session_app_data):
     reason="symlink is not supported",
 )
 @pytest.mark.skipif(not fs_supports_symlink(), reason="symlink is not supported")
-def test_py_info_cached_symlink(mocker, tmp_path, session_app_data):
+def test_py_info_cached_symlink(mocker, tmp_path, session_app_data, cache):
     spy = mocker.spy(cached_py_info, "_run_subprocess")
-    first_result = PythonInfo.from_exe(sys.executable, session_app_data)
+    first_result = PythonInfo.from_exe(sys.executable, session_app_data, cache)
     assert first_result is not None
     count = spy.call_count
     # at least two, one for the venv, one more for the host
@@ -209,7 +204,7 @@ def test_py_info_cached_symlink(mocker, tmp_path, session_app_data):
     if pyvenv.exists():
         (tmp_path / pyvenv.name).write_text(pyvenv.read_text(encoding="utf-8"), encoding="utf-8")
     new_exe_str = str(new_exe)
-    second_result = PythonInfo.from_exe(new_exe_str, session_app_data)
+    second_result = PythonInfo.from_exe(new_exe_str, session_app_data, cache)
     assert second_result.executable == new_exe_str
     assert spy.call_count == count + 1  # no longer needed the host invocation, but the new symlink is must
 
@@ -257,12 +252,14 @@ def test_system_executable_no_exact_match(  # noqa: PLR0913
     mocker,
     caplog,
     session_app_data,
+    cache,
+    current_info,
 ):
     """Here we should fallback to other compatible"""
     caplog.set_level(logging.DEBUG)
 
     def _make_py_info(of):
-        base = copy.deepcopy(CURRENT)
+        base = copy.deepcopy(current_info)
         base.implementation = of.implementation
         base.version_info = of.version_info
         base.architecture = of.architecture
@@ -275,8 +272,8 @@ def test_system_executable_no_exact_match(  # noqa: PLR0913
         path = tmp_path / str(pos)
         path.write_text("", encoding="utf-8")
         py_info = _make_py_info(i)
-        py_info.system_executable = CURRENT.system_executable
-        py_info.executable = CURRENT.system_executable
+        py_info.system_executable = current_info.system_executable
+        py_info.executable = current_info.system_executable
         py_info.base_executable = str(path)
         if pos == position:
             selected = py_info
@@ -287,7 +284,7 @@ def test_system_executable_no_exact_match(  # noqa: PLR0913
     mocker.patch.object(target_py_info, "_find_possible_exe_names", return_value=names)
     mocker.patch.object(target_py_info, "_find_possible_folders", return_value=[str(tmp_path)])
 
-    def func(k, app_data, resolve_to_host, raise_on_error, env, cache=None):  # noqa: ARG001, PLR0913
+    def func(k, app_data, cache, resolve_to_host, raise_on_error, env):  # noqa: ARG001, PLR0913
         return discovered_with_path[k]
 
     mocker.patch.object(target_py_info, "from_exe", side_effect=func)
@@ -295,8 +292,8 @@ def test_system_executable_no_exact_match(  # noqa: PLR0913
 
     target_py_info.system_executable = None
     target_py_info.executable = str(tmp_path)
-    mapped = target_py_info._resolve_to_system(session_app_data, target_py_info)  # noqa: SLF001
-    assert mapped.system_executable == CURRENT.system_executable
+    mapped = target_py_info._resolve_to_system(session_app_data, target_py_info, cache)  # noqa: SLF001
+    assert mapped.system_executable == current_info.system_executable
     found = discovered_with_path[mapped.base_executable]
     assert found is selected
 
@@ -310,7 +307,7 @@ def test_system_executable_no_exact_match(  # noqa: PLR0913
     assert warn_similar.msg.startswith("no exact match found, chosen most similar")
 
 
-def test_py_info_ignores_distutils_config(monkeypatch, tmp_path):
+def test_py_info_ignores_distutils_config(monkeypatch, tmp_path, session_app_data, cache):
     raw = f"""
     [install]
     prefix={tmp_path}{os.sep}prefix
@@ -322,47 +319,47 @@ def test_py_info_ignores_distutils_config(monkeypatch, tmp_path):
     """
     (tmp_path / "setup.cfg").write_text(dedent(raw), encoding="utf-8")
     monkeypatch.chdir(tmp_path)
-    py_info = PythonInfo.from_exe(sys.executable)
+    py_info = PythonInfo.from_exe(sys.executable, session_app_data, cache)
     distutils = py_info.distutils_install
     for key, value in distutils.items():
         assert not value.startswith(str(tmp_path)), f"{key}={value}"
 
 
-def test_discover_exe_on_path_non_spec_name_match(mocker):
-    suffixed_name = f"python{CURRENT.version_info.major}.{CURRENT.version_info.minor}m"
+def test_discover_exe_on_path_non_spec_name_match(mocker, current_info):
+    suffixed_name = f"python{current_info.version_info.major}.{current_info.version_info.minor}m"
     if sys.platform == "win32":
-        suffixed_name += Path(CURRENT.original_executable).suffix
+        suffixed_name += Path(current_info.original_executable).suffix
     spec = PythonSpec.from_string_spec(suffixed_name)
-    mocker.patch.object(CURRENT, "original_executable", str(Path(CURRENT.executable).parent / suffixed_name))
-    assert CURRENT.satisfies(spec, impl_must_match=True) is True
+    mocker.patch.object(current_info, "original_executable", str(Path(current_info.executable).parent / suffixed_name))
+    assert current_info.satisfies(spec, impl_must_match=True) is True
 
 
-def test_discover_exe_on_path_non_spec_name_not_match(mocker):
-    suffixed_name = f"python{CURRENT.version_info.major}.{CURRENT.version_info.minor}m"
+def test_discover_exe_on_path_non_spec_name_not_match(mocker, current_info):
+    suffixed_name = f"python{current_info.version_info.major}.{current_info.version_info.minor}m"
     if sys.platform == "win32":
-        suffixed_name += Path(CURRENT.original_executable).suffix
+        suffixed_name += Path(current_info.original_executable).suffix
     spec = PythonSpec.from_string_spec(suffixed_name)
     mocker.patch.object(
-        CURRENT,
+        current_info,
         "original_executable",
-        str(Path(CURRENT.executable).parent / f"e{suffixed_name}"),
+        str(Path(current_info.executable).parent / f"e{suffixed_name}"),
     )
-    assert CURRENT.satisfies(spec, impl_must_match=True) is False
+    assert current_info.satisfies(spec, impl_must_match=True) is False
 
 
 @pytest.mark.skipif(IS_PYPY, reason="setuptools distutils patching does not work")
-def test_py_info_setuptools():
+def test_py_info_setuptools(current_info):
     from setuptools.dist import Distribution  # noqa: PLC0415
 
     assert Distribution
-    PythonInfo()
+    assert current_info
 
 
 @pytest.mark.usefixtures("_skip_if_test_in_system")
-def test_py_info_to_system_raises(session_app_data, mocker, caplog):
+def test_py_info_to_system_raises(session_app_data, mocker, caplog, cache):
     caplog.set_level(logging.DEBUG)
     mocker.patch.object(PythonInfo, "_find_possible_folders", return_value=[])
-    result = PythonInfo.from_exe(sys.executable, app_data=session_app_data, raise_on_error=False)
+    result = PythonInfo.from_exe(sys.executable, session_app_data, cache, raise_on_error=False)
     assert result is None
     log = caplog.records[-1]
     assert log.levelno == logging.INFO
@@ -378,7 +375,7 @@ def _stringify_schemes_dict(schemes_dict):
     return {str(n): {str(k): str(v) for k, v in s.items()} for n, s in schemes_dict.items()}
 
 
-def test_custom_venv_install_scheme_is_prefered(mocker):
+def test_custom_venv_install_scheme_is_prefered(mocker, current_info):
     # The paths in this test are Fedora paths, but we set them for nt as well, so the test also works on Windows,
     # despite the actual values are nonsense there.
     # Values were simplified to be compatible with all the supported Python versions.
@@ -427,37 +424,41 @@ def test_custom_venv_install_scheme_is_prefered(mocker):
     mocker.patch("distutils.command.install.INSTALL_SCHEMES", distutils_schemes)
     mocker.patch("sysconfig._INSTALL_SCHEMES", sysconfig_install_schemes)
 
-    pyinfo = PythonInfo()
+    pyinfo = current_info
     pyver = f"{pyinfo.version_info.major}.{pyinfo.version_info.minor}"
     assert pyinfo.install_path("scripts") == "bin"
     assert pyinfo.install_path("purelib").replace(os.sep, "/") == f"lib/python{pyver}/site-packages"
 
 
 @pytest.mark.skipif(not (os.name == "posix" and sys.version_info[:2] >= (3, 11)), reason="POSIX 3.11+ specific")
-def test_fallback_existent_system_executable(mocker):
-    current = PythonInfo()
+def test_fallback_existent_system_executable(mocker, current_info):
     # Posix may execute a "python" out of a venv but try to set the base_executable
     # to "python" out of the system installation path. PEP 394 informs distributions
     # that "python" is not required and the standard `make install` does not provide one
 
     # Falsify some data to look like we're in a venv
-    current.prefix = current.exec_prefix = "/tmp/tmp.izZNCyINRj/venv"  # noqa: S108
-    current.executable = current.original_executable = os.path.join(current.prefix, "bin/python")
+    current_info.prefix = current_info.exec_prefix = "/tmp/tmp.izZNCyINRj/venv"  # noqa: S108
+    current_info.executable = current_info.original_executable = os.path.join(current_info.prefix, "bin/python")
 
     # Since we don't know if the distribution we're on provides python, use a binary that should not exist
-    mocker.patch.object(sys, "_base_executable", os.path.join(os.path.dirname(current.system_executable), "idontexist"))
-    mocker.patch.object(sys, "executable", current.executable)
+    mocker.patch.object(
+        sys,
+        "_base_executable",
+        os.path.join(os.path.dirname(current_info.system_executable), "idontexist"),
+    )
+    mocker.patch.object(sys, "executable", current_info.executable)
 
     # ensure it falls back to an alternate binary name that exists
-    system_executable = current._fast_get_system_executable()  # noqa: SLF001
+    system_executable = current_info._fast_get_system_executable()  # noqa: SLF001
     assert os.path.basename(system_executable) in [
-        f"python{v}" for v in (current.version_info.major, f"{current.version_info.major}.{current.version_info.minor}")
+        f"python{v}"
+        for v in (current_info.version_info.major, f"{current_info.version_info.major}.{current_info.version_info.minor}")
     ]
     assert os.path.exists(system_executable)
 
 
 @pytest.mark.skipif(sys.version_info[:2] != (3, 10), reason="3.10 specific")
-def test_uses_posix_prefix_on_debian_3_10_without_venv(mocker):
+def test_uses_posix_prefix_on_debian_3_10_without_venv(mocker, current_info):
     # this is taken from ubuntu 22.04 /usr/lib/python3.10/sysconfig.py
     sysconfig_install_schemes = {
         "posix_prefix": {
@@ -520,7 +521,7 @@ def test_uses_posix_prefix_on_debian_3_10_without_venv(mocker):
     mocker.patch("sysconfig.get_path", sysconfig_get_path)
     mocker.patch("sysconfig.get_default_scheme", return_value="posix_local")
 
-    pyinfo = PythonInfo()
+    pyinfo = current_info
     pyver = f"{pyinfo.version_info.major}.{pyinfo.version_info.minor}"
     assert pyinfo.install_path("scripts") == "bin"
     assert pyinfo.install_path("purelib").replace(os.sep, "/") == f"lib/python{pyver}/site-packages"

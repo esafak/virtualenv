@@ -363,11 +363,11 @@ class PythonInfo:  # noqa: PLR0904
         )
 
     @classmethod
-    def clear_cache(cls, app_data, cache=None):
+    def clear_cache(cls, cache=None):
         # this method is not used by itself, so here and called functions can import stuff locally
         from virtualenv.discovery.cached_py_info import clear  # noqa: PLC0415
 
-        clear(app_data, cache)
+        clear(cache)
         cls._cache_exe_discovery.clear()
 
     def satisfies(self, spec, impl_must_match):  # noqa: C901, PLR0911
@@ -408,7 +408,7 @@ class PythonInfo:  # noqa: PLR0904
     _current = None
 
     @classmethod
-    def current(cls, app_data=None, cache=None):
+    def current(cls, app_data, cache):
         """
         This locates the current host interpreter information. This might be different than what we run into in case
         the host python has been upgraded from underneath us.
@@ -424,7 +424,7 @@ class PythonInfo:  # noqa: PLR0904
         return cls._current
 
     @classmethod
-    def current_system(cls, app_data=None, cache=None) -> PythonInfo:
+    def current_system(cls, app_data, cache) -> PythonInfo:
         """
         This locates the current host interpreter information. This might be different than what we run into in case
         the host python has been upgraded from underneath us.
@@ -453,12 +453,12 @@ class PythonInfo:  # noqa: PLR0904
     def from_exe(  # noqa: PLR0913
         cls,
         exe,
-        app_data=None,
+        app_data,
+        cache,
         raise_on_error=True,  # noqa: FBT002
         ignore_cache=False,  # noqa: FBT002
         resolve_to_host=True,  # noqa: FBT002
         env=None,
-        cache=None,
     ):
         """Given a path to an executable get the python information."""
         # this method is not used by itself, so here and called functions can import stuff locally
@@ -469,10 +469,10 @@ class PythonInfo:  # noqa: PLR0904
             cls,
             app_data,
             exe,
+            cache,
             env=env,
             raise_on_error=raise_on_error,
             ignore_cache=ignore_cache,
-            cache=cache,
         )
 
         if isinstance(proposed, PythonInfo) and resolve_to_host:
@@ -499,7 +499,7 @@ class PythonInfo:  # noqa: PLR0904
         return result
 
     @classmethod
-    def _resolve_to_system(cls, app_data, target, cache=None):
+    def _resolve_to_system(cls, app_data, target, cache):
         start_executable = target.executable
         prefixes = OrderedDict()
         while target.system_executable is None:
@@ -516,15 +516,15 @@ class PythonInfo:  # noqa: PLR0904
                 msg = "prefixes are causing a circle {}".format("|".join(prefixes.keys()))
                 raise RuntimeError(msg)
             prefixes[prefix] = target
-            target = target.discover_exe(app_data, prefix=prefix, exact=False, cache=cache)
+            target = target.discover_exe(app_data, cache, prefix=prefix, exact=False)
         if target.executable != target.system_executable:
-            target = cls.from_exe(target.system_executable, app_data, cache=cache)
+            target = cls.from_exe(target.system_executable, app_data, cache)
         target.executable = start_executable
         return target
 
     _cache_exe_discovery = {}  # noqa: RUF012
 
-    def discover_exe(self, app_data, prefix, exact=True, env=None, cache=None):  # noqa: FBT002
+    def discover_exe(self, app_data, cache, prefix, exact=True, env=None):  # noqa: FBT002
         key = prefix, exact
         if key in self._cache_exe_discovery and prefix:
             LOGGER.debug("discover exe from cache %s - exact %s: %r", prefix, exact, self._cache_exe_discovery[key])
@@ -537,7 +537,7 @@ class PythonInfo:  # noqa: PLR0904
         env = os.environ if env is None else env
         for folder in possible_folders:
             for name in possible_names:
-                info = self._check_exe(app_data, folder, name, exact, discovered, env, cache)
+                info = self._check_exe(app_data, cache, folder, name, exact, discovered, env)
                 if info is not None:
                     self._cache_exe_discovery[key] = info
                     return info
@@ -550,17 +550,17 @@ class PythonInfo:  # noqa: PLR0904
         msg = "failed to detect {} in {}".format("|".join(possible_names), os.pathsep.join(possible_folders))
         raise RuntimeError(msg)
 
-    def _check_exe(self, app_data, folder, name, exact, discovered, env, cache):  # noqa: PLR0913
+    def _check_exe(self, app_data, cache, folder, name, exact, discovered, env):  # noqa: PLR0913
         exe_path = os.path.join(folder, name)
         if not os.path.exists(exe_path):
             return None
         info = self.from_exe(
             exe_path,
             app_data,
+            cache,
             resolve_to_host=False,
             raise_on_error=False,
             env=env,
-            cache=cache,
         )
         if info is None:  # ignore if for some reason we can't query
             return None

@@ -6,7 +6,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from virtualenv.app_data.na import AppDataDisabled
-from virtualenv.discovery.cache import Cache
+
+from .cache import Cache
 
 if TYPE_CHECKING:
     from virtualenv.app_data.base import AppData
@@ -15,8 +16,12 @@ LOGGER = logging.getLogger(__name__)
 
 
 class FileCache(Cache):
-    def __init__(self, app_data: AppData) -> None:
+    def __init__(self, app_data: AppData, py_info_hash: str | None = None) -> None:
         self.app_data = app_data if app_data is not None else AppDataDisabled()
+        self._py_info_hash = py_info_hash
+
+    def _get_py_info_hash(self) -> str | None:
+        return self._py_info_hash
 
     def get(self, key: Path):
         """Get a value from the file cache."""
@@ -36,17 +41,11 @@ class FileCache(Cache):
             except OSError:
                 path_modified = -1
 
-            py_info_script = Path(__file__).parent / "py_info.py"
-            try:
-                py_info_hash = hashlib.sha256(py_info_script.read_bytes()).hexdigest()
-            except OSError:
-                py_info_hash = None
-
             data = {
                 "st_mtime": path_modified,
                 "path": path_text,
                 "content": value,
-                "hash": py_info_hash,
+                "hash": self._get_py_info_hash(),
             }
             py_info_store.write(data)
 
@@ -69,11 +68,7 @@ class FileCache(Cache):
         except OSError:
             path_modified = -1
 
-        py_info_script = Path(__file__).parent / "py_info.py"
-        try:
-            py_info_hash = hashlib.sha256(py_info_script.read_bytes()).hexdigest()
-        except OSError:
-            py_info_hash = None
+        py_info_hash = self._get_py_info_hash()
 
         of_path = data.get("path")
         of_st_mtime = data.get("st_mtime")

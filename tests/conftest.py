@@ -122,11 +122,21 @@ def _check_cwd_not_changed_by_test():
         pytest.fail(f"tests changed cwd: {old!r} => {new!r}")
 
 
+@pytest.fixture(scope="session")
+def cache(session_app_data):
+    import hashlib
+    from virtualenv.cache import FileCache
+
+    py_info_script = Path(__file__).parent / "src" / "virtualenv" / "discovery" / "py_info.py"
+    py_info_hash = hashlib.sha256(py_info_script.read_bytes()).hexdigest()
+    return FileCache(session_app_data, py_info_hash)
+
+
 @pytest.fixture(autouse=True)
-def _ensure_py_info_cache_empty(session_app_data):
-    PythonInfo.clear_cache(session_app_data)
+def _ensure_py_info_cache_empty(cache):
+    PythonInfo.clear_cache(cache)
     yield
-    PythonInfo.clear_cache(session_app_data)
+    PythonInfo.clear_cache(cache)
 
 
 @contextmanager
@@ -307,8 +317,8 @@ def special_name_dir(tmp_path, special_char_name):
 
 
 @pytest.fixture(scope="session")
-def current_creators(session_app_data):
-    return PythonInfo.current_system(session_app_data).creators()
+def current_creators(session_app_data, cache):
+    return PythonInfo.current_system(session_app_data, cache).creators()
 
 
 @pytest.fixture(scope="session")
@@ -355,8 +365,8 @@ def for_py_version():
 
 
 @pytest.fixture
-def _skip_if_test_in_system(session_app_data):
-    current = PythonInfo.current(session_app_data)
+def _skip_if_test_in_system(session_app_data, cache):
+    current = PythonInfo.current(session_app_data, cache)
     if current.system_executable is not None:
         pytest.skip("test not valid if run under system")
 

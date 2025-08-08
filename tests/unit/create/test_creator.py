@@ -28,11 +28,25 @@ from virtualenv.create.pyenv_cfg import PyEnvCfg
 from virtualenv.create.via_global_ref import api
 from virtualenv.create.via_global_ref.builtin.cpython.common import is_macos_brew
 from virtualenv.create.via_global_ref.builtin.cpython.cpython3 import CPython3Posix
+import hashlib
+
+from virtualenv.cache import FileCache
 from virtualenv.discovery.py_info import PythonInfo
 from virtualenv.info import IS_PYPY, IS_WIN, fs_is_case_sensitive
 from virtualenv.run import cli_run, session_via_cli
 
-CURRENT = PythonInfo.current_system()
+
+@pytest.fixture(scope="session")
+def cache(session_app_data):
+    root_dir = Path(session_app_data.lock.path).parent.parent
+    py_info_script = root_dir / "src" / "virtualenv" / "discovery" / "py_info.py"
+    py_info_hash = hashlib.sha256(py_info_script.read_bytes()).hexdigest()
+    return FileCache(session_app_data, py_info_hash)
+
+
+@pytest.fixture(scope="session")
+def current_info(session_app_data, cache):
+    return PythonInfo.current_system(session_app_data, cache)
 
 
 def test_os_path_sep_not_allowed(tmp_path, capsys):
@@ -89,34 +103,40 @@ def cleanup_sys_path(paths):
 
 
 @pytest.fixture(scope="session")
-def system(session_app_data):
-    return get_env_debug_info(Path(CURRENT.system_executable), DEBUG_SCRIPT, session_app_data, os.environ)
+def system(session_app_data, current_info):
+    return get_env_debug_info(Path(current_info.system_executable), DEBUG_SCRIPT, session_app_data, os.environ)
 
 
-CURRENT_CREATORS = [i for i in CURRENT.creators().key_to_class if i != "builtin"]
-CREATE_METHODS = []
-for k, v in CURRENT.creators().key_to_meta.items():
-    if k in CURRENT_CREATORS:
-        if v.can_copy:
-            if k == "venv" and CURRENT.implementation == "PyPy" and CURRENT.pypy_version_info >= [7, 3, 13]:
-                continue  # https://foss.heptapod.net/pypy/pypy/-/issues/4019
-            CREATE_METHODS.append((k, "copies"))
-        if v.can_symlink:
-            CREATE_METHODS.append((k, "symlinks"))
+@pytest.fixture(scope="session")
+def current_creators(current_info):
+    return [i for i in current_info.creators().key_to_class if i != "builtin"]
 
 
-@pytest.mark.parametrize(
-    ("creator", "isolated"),
-    [pytest.param(*i, id=f"{'-'.join(i[0])}-{i[1]}") for i in product(CREATE_METHODS, ["isolated", "global"])],
-)
+@pytest.fixture(scope="session")
+def create_methods(current_info, current_creators):
+    methods = []
+    for k, v in current_info.creators().key_to_meta.items():
+        if k in current_creators:
+            if v.can_copy:
+                if k == "venv" and current_info.implementation == "PyPy" and current_info.pypy_version_info >= [7, 3, 13]:
+                    continue  # https://foss.heptapod.net/pypy/pypy/-/issues/4019
+                methods.append((k, "copies"))
+            if v.can_symlink:
+                methods.append((k, "symlinks"))
+    return methods
+
+
 def test_create_no_seed(  # noqa: C901, PLR0912, PLR0913, PLR0915
     python,
-    creator,
-    isolated,
     system,
     coverage_env,
     special_name_dir,
+    session_app_data,
+    cache,
+    current_info,
+    create_methods,
 ):
+    for creator, isolated in product(create_methods, ["isolated", "global"]):
     dest = special_name_dir
     creator_key, method = creator
     cmd = [
@@ -205,12 +225,12 @@ def test_create_no_seed(  # noqa: C901, PLR0912, PLR0913, PLR0915
         # option 3: an absolute symlink, should point outside the venv
         assert not link.startswith(str(creator.dest))
 
-    if IS_WIN and CURRENT.implementation == "CPython":
+    if IS_WIN and current_info.implementation == "CPython":
         python_w = creator.exe.parent / "pythonw.exe"
         assert python_w.exists()
         assert python_w.read_bytes() != creator.exe.read_bytes()
 
-    if CPython3Posix.pyvenv_launch_patch_active(PythonInfo.from_exe(python)) and creator_key != "venv":
+    if CPython3Posix.pyvenv_launch_patch_active(PythonInfo.from_exe(python, session_app_data, cache)) and creator_key != "venv":
         result = subprocess.check_output(
             [str(creator.exe), "-c", 'import os; print(os.environ.get("__PYVENV_LAUNCHER__"))'],
             text=True,
@@ -272,8 +292,9 @@ def test_create_vcs_ignore_exists_override(tmp_path):
     assert git_ignore.read_text(encoding="utf-8") == "magic"
 
 
-@pytest.mark.skipif(not CURRENT.has_venv, reason="requires interpreter with venv")
-def test_venv_fails_not_inline(tmp_path, capsys, mocker):
+def test_venv_fails_not_inline(tmp_path, capsys, mocker, current_info):
+    if not current_info.has_venv:
+        pytest.skip("requires interpreter with venv")
     if hasattr(os, "geteuid") and os.geteuid() == 0:
         pytest.skip("no way to check permission restriction when running under root")
 
@@ -289,7 +310,7 @@ def test_venv_fails_not_inline(tmp_path, capsys, mocker):
     cfg = str(cfg_path)
     try:
         os.chmod(cfg, stat.S_IREAD | stat.S_IRGRP | stat.S_IROTH)
-        cmd = ["-p", str(CURRENT.executable), str(tmp_path), "--without-pip", "--creator", "venv"]
+        cmd = ["-p", str(current_info.executable), str(tmp_path), "--without-pip", "--creator", "venv"]
         with pytest.raises(SystemExit) as context:
             run(cmd)
         assert context.value.code != 0
@@ -300,60 +321,58 @@ def test_venv_fails_not_inline(tmp_path, capsys, mocker):
     assert "Error:" in err, err
 
 
-@pytest.mark.parametrize("creator", CURRENT_CREATORS)
-@pytest.mark.parametrize("clear", [True, False], ids=["clear", "no_clear"])
-def test_create_clear_resets(tmp_path, creator, clear, caplog):
-    caplog.set_level(logging.DEBUG)
-    if creator == "venv" and clear is False:
-        pytest.skip("venv without clear might fail")
-    marker = tmp_path / "magic"
-    cmd = [str(tmp_path), "--seeder", "app-data", "--without-pip", "--creator", creator, "-vvv"]
-    cli_run(cmd)
+def test_create_clear_resets(tmp_path, caplog, current_creators):
+    for creator, clear in product(current_creators, [True, False]):
+        caplog.set_level(logging.DEBUG)
+        if creator == "venv" and clear is False:
+            pytest.skip("venv without clear might fail")
+        marker = tmp_path / "magic"
+        cmd = [str(tmp_path), "--seeder", "app-data", "--without-pip", "--creator", creator, "-vvv"]
+        cli_run(cmd)
 
-    marker.write_text("", encoding="utf-8")  # if we a marker file this should be gone on a clear run, remain otherwise
-    assert marker.exists()
+        marker.write_text("", encoding="utf-8")  # if we a marker file this should be gone on a clear run, remain otherwise
+        assert marker.exists()
 
-    cli_run(cmd + (["--clear"] if clear else []))
-    assert marker.exists() is not clear
-
-
-@pytest.mark.parametrize("creator", CURRENT_CREATORS)
-@pytest.mark.parametrize("prompt", [None, "magic"])
-def test_prompt_set(tmp_path, creator, prompt):
-    cmd = [str(tmp_path), "--seeder", "app-data", "--without-pip", "--creator", creator]
-    if prompt is not None:
-        cmd.extend(["--prompt", "magic"])
-
-    result = cli_run(cmd)
-    actual_prompt = tmp_path.name if prompt is None else prompt
-    cfg = PyEnvCfg.from_file(result.creator.pyenv_cfg.path)
-    if prompt is None:
-        assert "prompt" not in cfg
-    elif creator != "venv":
-        assert "prompt" in cfg, list(cfg.content.keys())
-        assert cfg["prompt"] == actual_prompt
+        cli_run(cmd + (["--clear"] if clear else []))
+        assert marker.exists() is not clear
 
 
-@pytest.mark.parametrize("creator", CURRENT_CREATORS)
-def test_home_path_is_exe_parent(tmp_path, creator):
-    cmd = [str(tmp_path), "--seeder", "app-data", "--without-pip", "--creator", creator]
+def test_prompt_set(tmp_path, current_creators):
+    for creator, prompt in product(current_creators, [None, "magic"]):
+        cmd = [str(tmp_path), "--seeder", "app-data", "--without-pip", "--creator", creator]
+        if prompt is not None:
+            cmd.extend(["--prompt", "magic"])
 
-    result = cli_run(cmd)
-    cfg = PyEnvCfg.from_file(result.creator.pyenv_cfg.path)
+        result = cli_run(cmd)
+        actual_prompt = tmp_path.name if prompt is None else prompt
+        cfg = PyEnvCfg.from_file(result.creator.pyenv_cfg.path)
+        if prompt is None:
+            assert "prompt" not in cfg
+        elif creator != "venv":
+            assert "prompt" in cfg, list(cfg.content.keys())
+            assert cfg["prompt"] == actual_prompt
 
-    # Cannot assume "home" path is a specific value as path resolution may change
-    # between versions (symlinks, framework paths, etc) but we can check that a
-    # python executable is present from the configured path per PEP 405
-    if sys.platform == "win32":
-        exes = ("python.exe",)
-    else:
-        exes = (
-            "python",
-            f"python{sys.version_info.major}",
-            f"python{sys.version_info.major}.{sys.version_info.minor}",
-        )
 
-    assert any(os.path.exists(os.path.join(cfg["home"], exe)) for exe in exes)
+def test_home_path_is_exe_parent(tmp_path, current_creators):
+    for creator in current_creators:
+        cmd = [str(tmp_path), "--seeder", "app-data", "--without-pip", "--creator", creator]
+
+        result = cli_run(cmd)
+        cfg = PyEnvCfg.from_file(result.creator.pyenv_cfg.path)
+
+        # Cannot assume "home" path is a specific value as path resolution may change
+        # between versions (symlinks, framework paths, etc) but we can check that a
+        # python executable is present from the configured path per PEP 405
+        if sys.platform == "win32":
+            exes = ("python.exe",)
+        else:
+            exes = (
+                "python",
+                f"python{sys.version_info.major}",
+                f"python{sys.version_info.major}.{sys.version_info.minor}",
+            )
+
+        assert any(os.path.exists(os.path.join(cfg["home"], exe)) for exe in exes)
 
 
 @pytest.mark.usefixtures("temp_app_data")
@@ -383,8 +402,7 @@ def test_creator_replaces_altsep_in_dest(tmp_path):
     assert str(result) == dest.format(os.sep)
 
 
-@pytest.mark.usefixtures("current_fastest")
-def test_create_long_path(tmp_path):
+def test_create_long_path(tmp_path, current_fastest):
     if sys.platform == "darwin":
         max_shebang_length = 512
     else:
@@ -400,20 +418,19 @@ def test_create_long_path(tmp_path):
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("creator", sorted(set(PythonInfo.current_system().creators().key_to_class) - {"builtin"}))
-@pytest.mark.usefixtures("session_app_data")
-def test_create_distutils_cfg(creator, tmp_path, monkeypatch):
-    result = cli_run(
-        [
-            str(tmp_path / "venv"),
-            "--activators",
-            "",
-            "--creator",
-            creator,
-            "--setuptools",
-            "bundle",
-        ],
-    )
+def test_create_distutils_cfg(tmp_path, monkeypatch, current_creators):
+    for creator in current_creators:
+        result = cli_run(
+            [
+                str(tmp_path / "venv"),
+                "--activators",
+                "",
+                "--creator",
+                creator,
+                "--setuptools",
+                "bundle",
+            ],
+        )
 
     app = Path(__file__).parent / "console_app"
     dest = tmp_path / "console_app"
@@ -464,30 +481,31 @@ def list_files(path):
     return result
 
 
-@pytest.mark.skipif(is_macos_brew(CURRENT), reason="no copy on brew")
-@pytest.mark.skip(reason="https://github.com/pypa/setuptools/issues/4640")
-def test_zip_importer_can_import_setuptools(tmp_path):
-    """We're patching the loaders so might fail on r/o loaders, such as zipimporter on CPython<3.8"""
-    result = cli_run(
-        [str(tmp_path / "venv"), "--activators", "", "--no-pip", "--no-wheel", "--copies", "--setuptools", "bundle"],
-    )
-    zip_path = tmp_path / "site-packages.zip"
-    with zipfile.ZipFile(str(zip_path), "w", zipfile.ZIP_DEFLATED) as zip_handler:
-        lib = str(result.creator.purelib)
-        for root, _, files in os.walk(lib):
-            base = root[len(lib) :].lstrip(os.pathsep)
-            for file in files:
-                if not file.startswith("_virtualenv"):
-                    zip_handler.write(filename=os.path.join(root, file), arcname=os.path.join(base, file))
-    for folder in result.creator.purelib.iterdir():
-        if not folder.name.startswith("_virtualenv"):
-            if folder.is_dir():
-                shutil.rmtree(str(folder), ignore_errors=True)
-            else:
-                folder.unlink()
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(zip_path)
-    subprocess.check_call([str(result.creator.exe), "-c", "from setuptools.dist import Distribution"], env=env)
+    @pytest.mark.skip(reason="https://github.com/pypa/setuptools/issues/4640")
+    def test_zip_importer_can_import_setuptools(tmp_path, current_info):
+        if is_macos_brew(current_info):
+            pytest.skip("no copy on brew")
+        """We're patching the loaders so might fail on r/o loaders, such as zipimporter on CPython<3.8"""
+        result = cli_run(
+            [str(tmp_path / "venv"), "--activators", "", "--no-pip", "--no-wheel", "--copies", "--setuptools", "bundle"],
+        )
+        zip_path = tmp_path / "site-packages.zip"
+        with zipfile.ZipFile(str(zip_path), "w", zipfile.ZIP_DEFLATED) as zip_handler:
+            lib = str(result.creator.purelib)
+            for root, _, files in os.walk(lib):
+                base = root[len(lib) :].lstrip(os.pathsep)
+                for file in files:
+                    if not file.startswith("_virtualenv"):
+                        zip_handler.write(filename=os.path.join(root, file), arcname=os.path.join(base, file))
+        for folder in result.creator.purelib.iterdir():
+            if not folder.name.startswith("_virtualenv"):
+                if folder.is_dir():
+                    shutil.rmtree(str(folder), ignore_errors=True)
+                else:
+                    folder.unlink()
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(zip_path)
+        subprocess.check_call([str(result.creator.exe), "-c", "from setuptools.dist import Distribution"], env=env)
 
 
 # verify that python in created virtualenv does not preimport threading.
@@ -675,8 +693,9 @@ def test_python_path(monkeypatch, tmp_path, python_path_on):
 # (specifically venv scripts delivered with Python itself) are not writable.
 #
 # https://github.com/pypa/virtualenv/issues/2419
-@pytest.mark.skipif("venv" not in CURRENT_CREATORS, reason="test needs venv creator")
-def test_venv_creator_without_write_perms(tmp_path, mocker):
+def test_venv_creator_without_write_perms(tmp_path, mocker, current_creators):
+    if "venv" not in current_creators:
+        pytest.skip("test needs venv creator")
     from virtualenv.run.session import Session  # noqa: PLC0415
 
     prev = Session._create  # noqa: SLF001
@@ -693,9 +712,9 @@ def test_venv_creator_without_write_perms(tmp_path, mocker):
     cli_run(cmd)
 
 
-def test_fallback_to_copies_if_symlink_unsupported(tmp_path, python, mocker):
+def test_fallback_to_copies_if_symlink_unsupported(tmp_path, python, mocker, session_app_data, cache):
     """Test that creating a virtual environment falls back to copies when filesystem has no symlink support."""
-    if is_macos_brew(PythonInfo.from_exe(python)):
+    if is_macos_brew(PythonInfo.from_exe(python, session_app_data, cache)):
         pytest.skip("brew python on darwin may not support copies, which is tested separately")
 
     # Given a filesystem that does not support symlinks
@@ -718,13 +737,13 @@ def test_fallback_to_copies_if_symlink_unsupported(tmp_path, python, mocker):
     assert result.creator.symlinks is False
 
 
-def test_fail_gracefully_if_no_method_supported(tmp_path, python, mocker):
+def test_fail_gracefully_if_no_method_supported(tmp_path, python, mocker, session_app_data, cache):
     """Test that virtualenv fails gracefully when no creation method is supported."""
     # Given a filesystem that does not support symlinks
     mocker.patch("virtualenv.create.via_global_ref.api.fs_supports_symlink", return_value=False)
 
     # And a creator that does not support copying
-    if not is_macos_brew(PythonInfo.from_exe(python)):
+    if not is_macos_brew(PythonInfo.from_exe(python, session_app_data, cache)):
         original_init = api.ViaGlobalRefMeta.__init__
 
         def new_init(self, *args, **kwargs):
@@ -747,7 +766,7 @@ def test_fail_gracefully_if_no_method_supported(tmp_path, python, mocker):
     # Then a RuntimeError should be raised with a detailed message
     assert "neither symlink or copy method supported" in str(excinfo.value)
     assert "symlink: the filesystem does not supports symlink" in str(excinfo.value)
-    if is_macos_brew(PythonInfo.from_exe(python)):
+    if is_macos_brew(PythonInfo.from_exe(python, session_app_data, cache)):
         assert "copy: Brew disables copy creation" in str(excinfo.value)
     else:
         assert "copy: copying is not supported" in str(excinfo.value)

@@ -5,11 +5,21 @@ from pathlib import Path
 
 import pytest
 
+import hashlib
+
+from virtualenv.cache import FileCache
 from virtualenv.config.cli.parser import VirtualEnvOptions
 from virtualenv.config.ini import IniConfig
 from virtualenv.create.via_global_ref.builtin.cpython.common import is_macos_brew
 from virtualenv.discovery.py_info import PythonInfo
 from virtualenv.run import session_via_cli
+
+
+@pytest.fixture(scope="session")
+def current_info(session_app_data):
+    py_info_hash = hashlib.sha256(str(Path(__file__).parent / "py_info.py").encode()).hexdigest()
+    cache = FileCache(session_app_data, py_info_hash)
+    return PythonInfo.current_system(session_app_data, cache)
 
 
 @pytest.fixture
@@ -76,8 +86,10 @@ def test_extra_search_dir_via_env_var(tmp_path, monkeypatch):
 
 
 @pytest.mark.usefixtures("_empty_conf")
-@pytest.mark.skipif(is_macos_brew(PythonInfo.current_system()), reason="no copy on brew")
-def test_value_alias(monkeypatch, mocker):
+def test_value_alias(monkeypatch, mocker, current_info):
+    if is_macos_brew(current_info):
+        pytest.skip("no copy on brew")
+
     from virtualenv.config.cli.parser import VirtualEnvConfigParser  # noqa: PLC0415
 
     prev = VirtualEnvConfigParser._fix_default  # noqa: SLF001

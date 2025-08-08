@@ -7,6 +7,7 @@ caching.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import random
@@ -19,13 +20,14 @@ from subprocess import Popen
 from typing import TYPE_CHECKING
 
 from virtualenv.app_data.na import AppDataDisabled
-from virtualenv.discovery.file_cache import FileCache
+from virtualenv.cache import FileCache
+from virtualenv.util.subprocess import subprocess
+
+from .py_info import PythonInfo
 
 if TYPE_CHECKING:
     from virtualenv.app_data.base import AppData
-    from virtualenv.discovery.cache import Cache
-from virtualenv.discovery.py_info import PythonInfo
-from virtualenv.util.subprocess import subprocess
+    from virtualenv.cache import Cache
 
 _CACHE = OrderedDict()
 _CACHE[Path(sys.executable)] = PythonInfo()
@@ -34,17 +36,15 @@ LOGGER = logging.getLogger(__name__)
 
 def from_exe(  # noqa: PLR0913
     cls,
-    app_data,
-    exe,
-    env=None,
+    app_data: AppData,
+    exe: str,
+    cache: Cache,
+    env: dict[str, str] | None = None,
     *,
-    raise_on_error=True,
-    ignore_cache=False,
-    cache: Cache | None = None,
+    raise_on_error: bool = True,
+    ignore_cache: bool = False,
 ) -> PythonInfo | None:
     env = os.environ if env is None else env
-    if cache is None:
-        cache = FileCache(app_data)
     result = _get_from_cache(cls, app_data, exe, env, cache, ignore_cache=ignore_cache)
     if isinstance(result, Exception):
         if raise_on_error:
@@ -54,7 +54,15 @@ def from_exe(  # noqa: PLR0913
     return result
 
 
-def _get_from_cache(cls, app_data: AppData, exe: str, env, cache: Cache, *, ignore_cache: bool) -> PythonInfo:  # noqa: PLR0913
+def _get_from_cache(
+    cls,
+    app_data: AppData,
+    exe: str,
+    env: dict[str, str],
+    cache: Cache,
+    *,
+    ignore_cache: bool,
+) -> PythonInfo:
     # note here we cannot resolve symlinks, as the symlink may trigger different prefix information if there's a
     # pyenv.cfg somewhere alongside on python3.5+
     exe_path = Path(exe)
@@ -68,7 +76,14 @@ def _get_from_cache(cls, app_data: AppData, exe: str, env, cache: Cache, *, igno
     return result
 
 
-def _get_via_file_cache(cls, app_data: AppData, path: Path, exe: str, env, cache: Cache) -> PythonInfo:  # noqa: PLR0913
+def _get_via_file_cache(
+    cls,
+    app_data: AppData,
+    path: Path,
+    exe: str,
+    env: dict[str, str],
+    cache: Cache,
+) -> PythonInfo:
     py_info = cache.get(path)
     if py_info is not None:
         py_info = cls._from_dict(py_info)
@@ -172,10 +187,8 @@ class LogCmd:
         return cmd_repr
 
 
-def clear(app_data=None, cache=None):
+def clear(cache: Cache | None = None) -> None:
     """Clear the cache."""
-    if cache is None and app_data is not None:
-        cache = FileCache(app_data)
     if cache is not None:
         cache.clear()
     _CACHE.clear()
